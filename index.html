@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Cube Run: Afterlife</title>
+    <style>
+        :root {
+            --bg-color: #05050a;
+            --accent: #4ade80;
+            --danger: #ef4444;
+            --virus: #8b5cf6;
+            --dog: #fbbf24;
+        }
+
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: var(--bg-color);
+            font-family: 'Courier New', Courier, monospace;
+            color: white;
+            user-select: none;
+            touch-action: none;
+        }
+
+        #game-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            overflow: hidden;
+        }
+
+        canvas { display: block; }
+
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 10;
+        }
+
+        .hud {
+            position: absolute;
+            top: 30px;
+            left: 30px;
+            font-size: 28px;
+            font-weight: bold;
+            color: var(--accent);
+            text-shadow: 0 0 10px rgba(74, 222, 128, 0.5);
+            letter-spacing: 2px;
+        }
+
+        #speed-alert {
+            position: absolute;
+            top: 70px;
+            left: 30px;
+            font-size: 16px;
+            color: var(--danger);
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        #overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: radial-gradient(circle, rgba(15, 15, 25, 0.8) 0%, rgba(0, 0, 0, 0.95) 100%);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            pointer-events: auto;
+            z-index: 20;
+            transition: opacity 0.4s ease;
+        }
+
+        .hidden { opacity: 0 !important; pointer-events: none !important; }
+
+        h1 {
+            font-size: clamp(40px, 8vw, 80px);
+            margin: 0;
+            color: var(--danger);
+            text-transform: uppercase;
+            letter-spacing: 15px;
+            text-shadow: 0 0 30px rgba(239, 68, 68, 0.6);
+            text-align: center;
+        }
+
+        p {
+            font-size: 18px;
+            margin: 20px 0 40px 0;
+            color: #889;
+            max-width: 500px;
+            text-align: center;
+            line-height: 1.5;
+        }
+
+        .btn {
+            padding: 18px 50px;
+            font-size: 22px;
+            background: transparent;
+            color: var(--accent);
+            border: 2px solid var(--accent);
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            text-transform: uppercase;
+            letter-spacing: 3px;
+        }
+
+        .btn:hover {
+            transform: translateY(-5px);
+            background: var(--accent);
+            color: black;
+            box-shadow: 0 0 30px rgba(74, 222, 128, 0.5);
+        }
+
+        #blood-splatter {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: radial-gradient(circle, rgba(239, 68, 68, 0.4) 0%, transparent 70%);
+            pointer-events: none;
+            z-index: 15;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+
+<div id="game-container">
+    <div id="blood-splatter"></div>
+    <canvas id="gameCanvas"></canvas>
+    
+    <div id="ui-layer">
+        <div class="hud">SCORE: <span id="scoreVal">0</span></div>
+        <div id="speed-alert">SYSTEM ACCELERATING...</div>
+    </div>
+
+    <div id="overlay">
+        <h1 id="title">CUBE RUN</h1>
+        <p id="message">System Breach Detected. Watch for Data Spikes, Laser Gates, and Cyber Dogs! Speed increases every 15 seconds.</p>
+        <button id="startBtn" class="btn">INITIALIZE RUN</button>
+    </div>
+</div>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const scoreEl = document.getElementById('scoreVal');
+    const speedAlert = document.getElementById('speed-alert');
+    const overlay = document.getElementById('overlay');
+    const titleEl = document.getElementById('title'); 
+    const startBtn = document.getElementById('startBtn');
+    const blood = document.getElementById('blood-splatter');
+
+    // Constants
+    const LANES = [-180, 0, 180];
+    const PLAYER_Z = 120; 
+    const GRAVITY = 0.8;
+    const JUMP_FORCE = -18;
+    const VIEW_DIST = 500;
+    const FPS = 60;
+
+    // State
+    let gameActive = false;
+    let score = 0;
+    let speed = 12;
+    let clock = 0;
+    let lastSurgeTime = 0;
+    let player = {
+        lane: 1, x: 0, y: 0, targetX: 0, dy: 0,
+        isJumping: false, isSliding: false, slideTimer: 0
+    };
+
+    let obstacles = [];
+    let environment = [];
+    let lastObstacleZ = 1000;
+
+    function resize() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // Inputs
+    const controls = {
+        left: () => { if (player.lane > 0) { player.lane--; player.targetX = LANES[player.lane]; }},
+        right: () => { if (player.lane < 2) { player.lane++; player.targetX = LANES[player.lane]; }},
+        jump: () => { if (!player.isJumping) { player.isJumping = true; player.dy = JUMP_FORCE; player.isSliding = false; }},
+        slide: () => { if (!player.isSliding) { player.isSliding = true; player.slideTimer = 35; player.isJumping = false; player.y = 0; }}
+    };
+
+    window.addEventListener('keydown', e => {
+        if (!gameActive) return;
+        if (e.key === 'ArrowLeft') controls.left();
+        if (e.key === 'ArrowRight') controls.right();
+        if (e.key === 'ArrowUp') controls.jump();
+        if (e.key === 'ArrowDown') controls.slide();
+    });
+
+    // Touch Handling
+    let tX, tY;
+    window.addEventListener('touchstart', e => { tX = e.touches[0].clientX; tY = e.touches[0].clientY; });
+    window.addEventListener('touchend', e => {
+        if (!gameActive) return;
+        const dx = e.changedTouches[0].clientX - tX;
+        const dy = e.changedTouches[0].clientY - tY;
+        if (Math.abs(dx) > Math.abs(dy)) {
+            if (dx > 30) controls.right(); else if (dx < -30) controls.left();
+        } else {
+            if (dy > 30) controls.slide(); else if (dy < -30) controls.jump();
+        }
+    });
+
+    function spawnObstacle() {
+        const rand = Math.random();
+        
+        let type = 'virus';
+        if (rand > 0.90 && score > 5000) type = 'eater'; 
+        else if (rand > 0.75) type = 'dog'; 
+        else if (rand > 0.55) type = 'laser'; 
+        else if (rand > 0.35) type = 'spike'; 
+        
+        obstacles.push({
+            lane: Math.floor(Math.random() * 3),
+            z: type === 'eater' ? -400 : 5000,
+            type: type,
+            passed: false,
+            vibe: Math.random(),
+            speedMult: type === 'eater' ? 1.4 : (type === 'dog' ? 1.2 : 1)
+        });
+        
+        if (score > 10000 && Math.random() < 0.3 && type !== 'eater' && type !== 'dog') {
+            let secondLane = (Math.floor(Math.random() * 3));
+            if (secondLane === obstacles[obstacles.length-1].lane) secondLane = (secondLane + 1) % 3;
+            obstacles.push({
+                lane: secondLane,
+                z: 5000,
+                type: type,
+                passed: false,
+                vibe: Math.random(),
+                speedMult: 1
+            });
+        }
+    }
+
+    function spawnEnv(z = 4000) {
+        environment.push({
+            x: (400 + Math.random() * 600) * (Math.random() > 0.5 ? 1 : -1),
+            z: z,
+            type: Math.random() > 0.6 ? 'data-tower' : 'pylon',
+            color: Math.random() > 0.5 ? '#1e293b' : '#0f172a'
+        });
+    }
+
+    function initGame() {
+        score = 0; speed = 12; obstacles = []; environment = [];
+        clock = 0;
+        lastSurgeTime = 0;
+        player = { lane: 1, x: 0, y: 0, targetX: 0, dy: 0, isJumping: false, isSliding: false, slideTimer: 0 };
+        for(let i=0; i<40; i++) spawnEnv(i * 120);
+        gameActive = true;
+        blood.style.display = 'none';
+        overlay.classList.add('hidden');
+        titleEl.innerText = "CUBE RUN";
+    }
+
+    function update() {
+        if (!gameActive) return;
+        clock++;
+        
+        // Base gradual speed increase
+        speed += 0.003;
+
+        // Periodic 15s surge (assuming 60fps)
+        const secondsElapsed = Math.floor(clock / FPS);
+        if (secondsElapsed > 0 && secondsElapsed % 15 === 0 && secondsElapsed !== lastSurgeTime) {
+            speed += 4; // Sharp jump in speed
+            lastSurgeTime = secondsElapsed;
+            
+            // UI Feedback
+            speedAlert.style.opacity = 1;
+            setTimeout(() => { speedAlert.style.opacity = 0; }, 2000);
+        }
+
+        speed = Math.min(60, speed);
+        score += Math.floor(speed / 4);
+        scoreEl.innerText = score;
+
+        player.x += (player.targetX - player.x) * 0.2;
+        if (player.isJumping) {
+            player.y += player.dy;
+            player.dy += GRAVITY;
+            if (player.y >= 0) { player.y = 0; player.isJumping = false; }
+        }
+        if (player.isSliding) {
+            player.slideTimer--;
+            if (player.slideTimer <= 0) player.isSliding = false;
+        }
+
+        for (let i = obstacles.length - 1; i >= 0; i--) {
+            const o = obstacles[i];
+            
+            if (o.type === 'eater') {
+                o.z += speed * (o.speedMult - 1);
+            } else if (o.type === 'dog') {
+                o.z -= speed * o.speedMult;
+            } else {
+                o.z -= speed;
+            }
+            
+            if (o.z < PLAYER_Z + 50 && o.z > PLAYER_Z - 50 && !o.passed) {
+                if (o.lane === player.lane) {
+                    let hit = false;
+                    if (o.type === 'laser' && !player.isSliding) hit = true;
+                    if (o.type === 'spike' && !player.isJumping) hit = true;
+                    if (o.type === 'virus' && !player.isJumping && !player.isSliding) hit = true;
+                    if (o.type === 'dog' && !player.isJumping) hit = true;
+                    if (o.type === 'eater') hit = true;
+                    
+                    if (hit) gameOver();
+                }
+            }
+            
+            if (o.type === 'eater') {
+                if (o.z > 2000) obstacles.splice(i, 1);
+            } else if (o.z < -200) {
+                obstacles.splice(i, 1);
+            }
+        }
+
+        for (let i = environment.length - 1; i >= 0; i--) {
+            environment[i].z -= speed;
+            if (environment[i].z < -200) { environment.splice(i, 1); spawnEnv(); }
+        }
+
+        lastObstacleZ -= speed;
+        if (lastObstacleZ <= 0) {
+            spawnObstacle();
+            lastObstacleZ = 700 + Math.random() * 900 - (speed * 8);
+        }
+    }
+
+    function project(x, y, z) {
+        const horizon = canvas.height * 0.45;
+        const scale = VIEW_DIST / (VIEW_DIST + z);
+        return {
+            x: (canvas.width / 2) + (x * scale),
+            y: horizon + ((canvas.height - horizon - y) * scale),
+            scale: scale
+        };
+    }
+
+    function draw() {
+        ctx.fillStyle = '#05050a';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        const skyG = ctx.createLinearGradient(0, 0, 0, canvas.height * 0.45);
+        skyG.addColorStop(0, '#000'); skyG.addColorStop(1, '#0c0c1e');
+        ctx.fillStyle = skyG; ctx.fillRect(0, 0, canvas.width, canvas.height * 0.45);
+
+        const p1 = project(-500, 0, 5000), p2 = project(500, 0, 5000), p3 = project(800, 0, 0), p4 = project(-800, 0, 0);
+        ctx.fillStyle = '#080812'; ctx.beginPath();
+        ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.lineTo(p3.x, p3.y); ctx.lineTo(p4.x, p4.y); ctx.fill();
+
+        ctx.strokeStyle = 'rgba(74, 222, 128, 0.15)';
+        ctx.lineWidth = 2;
+        [-270, -90, 90, 270].forEach(lx => {
+            const lp1 = project(lx, 0, 5000), lp2 = project(lx, 0, 0);
+            ctx.beginPath(); ctx.moveTo(lp1.x, lp1.y); ctx.lineTo(lp2.x, lp2.y); ctx.stroke();
+        });
+
+        const sprites = [...obstacles.map(o=>({...o, s:'o'})), ...environment.map(e=>({...e, s:'e'}))].sort((a,b)=>b.z-a.z);
+        sprites.forEach(s => s.s === 'o' ? drawObstacle(s) : drawEnv(s));
+
+        drawPlayer();
+    }
+
+    function drawPlayer() {
+        const p = project(player.x, -player.y, PLAYER_Z);
+        const w = 55 * p.scale, h = 90 * p.scale;
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        
+        ctx.fillStyle = '#4ade80';
+        ctx.shadowBlur = 15; ctx.shadowColor = '#4ade80';
+        
+        if (player.isSliding) {
+            ctx.beginPath();
+            ctx.roundRect(-w/2, -h*0.4, w, h*0.4, 5*p.scale);
+            ctx.fill();
+        } else {
+            const legMove = Math.sin(clock * 0.25) * 15 * p.scale;
+            ctx.beginPath();
+            ctx.roundRect(-w/2.5, -h, w*0.8, h*0.7, 5*p.scale); 
+            ctx.fill();
+            
+            ctx.fillStyle = '#22c55e';
+            ctx.fillRect(-w/3, -h*0.3, w/4, h*0.3 + (player.isJumping ? 0 : legMove)); 
+            ctx.fillRect(w/12, -h*0.3, w/4, h*0.3 - (player.isJumping ? 0 : legMove)); 
+            
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(-w/6, -h + 15*p.scale, w/3, 5*p.scale); 
+        }
+        ctx.restore();
+    }
+
+    function drawObstacle(o) {
+        const p = project(LANES[o.lane], 0, o.z);
+        if (p.scale < 0.01) return;
+        
+        ctx.save();
+        ctx.translate(p.x, p.y);
+
+        if (o.type === 'laser') {
+            const w = 300 * p.scale, h = 120 * p.scale;
+            const flicker = Math.random() > 0.1 ? 1 : 0.2;
+            ctx.fillStyle = `rgba(239, 68, 68, ${0.4 * flicker})`;
+            ctx.shadowBlur = 20; ctx.shadowColor = 'red';
+            ctx.fillRect(-w/2, -h*1.8, w, h*0.3);
+            ctx.fillStyle = '#ef4444';
+            ctx.fillRect(-w/2, -h*1.8, 10*p.scale, h*1.8);
+            ctx.fillRect(w/2 - 10*p.scale, -h*1.8, 10*p.scale, h*1.8);
+        } else if (o.type === 'spike') {
+            const w = 160 * p.scale, h = 60 * p.scale;
+            ctx.fillStyle = '#3b82f6';
+            ctx.shadowBlur = 15; ctx.shadowColor = '#3b82f6';
+            ctx.beginPath();
+            ctx.moveTo(-w/2, 0); ctx.lineTo(-w/4, -h); ctx.lineTo(0, 0); 
+            ctx.lineTo(w/4, -h); ctx.lineTo(w/2, 0); ctx.fill();
+        } else if (o.type === 'dog') {
+            const w = 60 * p.scale, h = 40 * p.scale;
+            const gallop = Math.sin(clock * 0.4) * 10 * p.scale;
+            ctx.fillStyle = '#fbbf24';
+            ctx.shadowBlur = 10; ctx.shadowColor = '#fbbf24';
+            ctx.translate(0, -gallop);
+            ctx.fillRect(-w/2, -h, w, h*0.7);
+            ctx.fillRect(w/2 - 5*p.scale, -h*1.2, 15*p.scale, 15*p.scale);
+            ctx.fillStyle = '#d97706';
+            ctx.fillRect(-w/2, -h*0.3, 5*p.scale, h*0.5 + gallop);
+            ctx.fillRect(w/4, -h*0.3, 5*p.scale, h*0.5 + gallop);
+        } else if (o.type === 'eater') {
+            const w = 140 * p.scale, h = 140 * p.scale;
+            const snap = Math.abs(Math.sin(clock * 0.3)) * 40 * p.scale;
+            ctx.fillStyle = '#f59e0b';
+            ctx.shadowBlur = 25; ctx.shadowColor = '#f59e0b';
+            ctx.beginPath();
+            ctx.moveTo(-w/2, -h/2 - snap); ctx.lineTo(w/2, -h/2 - snap); ctx.lineTo(0, -h - snap); ctx.fill();
+            ctx.beginPath();
+            ctx.moveTo(-w/2, -h/2 + snap); ctx.lineTo(w/2, -h/2 + snap); ctx.lineTo(0, 0 + snap); ctx.fill();
+            ctx.fillStyle = '#000';
+            ctx.fillRect(-w/6, -h/2 - 5*p.scale - snap, w/3, 5*p.scale);
+        } else {
+            const w = 80 * p.scale, h = 80 * p.scale;
+            const pulse = 1 + Math.sin(clock * 0.2 + o.vibe) * 0.15;
+            ctx.scale(pulse, pulse);
+            ctx.fillStyle = '#1e1e30';
+            ctx.strokeStyle = '#a855f7';
+            ctx.lineWidth = 3 * p.scale;
+            ctx.strokeRect(-w/2, -h, w, h);
+            ctx.fillStyle = '#a855f7';
+            ctx.shadowBlur = 10; ctx.shadowColor = '#a855f7';
+            ctx.fillRect(-w/4, -h * 0.75, w/2, w/2);
+        }
+        ctx.restore();
+    }
+
+    function drawEnv(e) {
+        const p = project(e.x, 0, e.z);
+        if (p.scale < 0.01) return;
+        ctx.fillStyle = e.color;
+        const w = 60 * p.scale;
+        const h = (e.type === 'data-tower' ? 400 : 200) * p.scale;
+        ctx.beginPath();
+        ctx.moveTo(p.x - w, p.y);
+        ctx.lineTo(p.x, p.y - h);
+        ctx.lineTo(p.x + w, p.y);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(74, 222, 128, 0.1)';
+        ctx.stroke();
+    }
+
+    function gameOver() {
+        gameActive = false;
+        blood.style.display = 'block';
+        titleEl.innerText = "DATA CONSUMED";
+        overlay.classList.remove('hidden');
+    }
+
+    function loop() { 
+        update(); 
+        draw(); 
+        requestAnimationFrame(loop); 
+    }
+
+    startBtn.addEventListener('click', initGame);
+    loop();
+</script>
+</body>
+</html>
